@@ -61,6 +61,8 @@ USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
 #  endif
 #  include <openssl/ssl.h>
 #  include <openssl/store.h>
+#    define OPENSSL_SUPPRESS_DEPRECATED
+#    undef OPENSSL_SUPPRESS_DEPRECATED
 
 #  ifdef HAVE_OPENSSL_ENGINE_H
 #    include <openssl/engine.h>
