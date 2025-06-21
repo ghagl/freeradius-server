@@ -60,6 +60,7 @@ USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
 #    include <openssl/evp.h>
 #  endif
 #  include <openssl/ssl.h>
+
 #  include <openssl/store.h>
 #  ifdef HAVE_OPENSSL_ENGINE_H
 #    include <openssl/engine.h>
@@ -71,6 +72,10 @@ USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
 static OSSL_PROVIDER *openssl_default_provider = NULL;
 static OSSL_PROVIDER *openssl_legacy_provider = NULL;
 OSSL_PROVIDER *pkcs11_provider = NULL;
+#endif
+
+#ifdef HAVE_OPENSSL_ENGINE_H
+ENGINE *pkcs11_engine = NULL;
 #endif
 
 #ifdef HAVE_OPENSSL_ENGINE_H
@@ -4510,7 +4515,8 @@ post_ca:
 	 *	SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS to work around issues
 	 *	in Windows Vista client.
 	 *	http://www.openssl.org/~bodo/tls-cbc.txt
-	 *	http://www.nabble.com/(RADIATOR)-Radiator-Version-3.16-released-t2600070.html
+	 *	http://www.nabble.com/(RADIATOR)-Radiator-Version-3.16-
+   d-t2600070.html
 	 */
 	ctx_options |= SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS;
 
