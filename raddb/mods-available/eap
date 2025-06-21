@@ -177,7 +177,7 @@ eap {
 	tls-config tls-common {
 		private_key_password = whatever
                #  This field may contain a PKCS #11 URI instead of a filename
-               #  if OpenSSL is using the libp11 "pkcs11" ENGINE plugin.
+               #  if OpenSSL is using a pkcs11 provider or the libp11 "pkcs11" ENGINE plugin.
                private_key_file = ${certdir}/server.pem
 
 		#  If Private key & Certificate are located in
@@ -215,7 +215,7 @@ eap {
 		#  we give general guidelines.
 		#
                #  This field may contain a PKCS #11 URI instead of a filename
-               #  if OpenSSL is using the libp11 "pkcs11" ENGINE plugin.
+               #  if OpenSSL is using a pkcs11 provider or the libp11 "pkcs11" ENGINE plugin.
                certificate_file = ${certdir}/server.pem
 
 		#  Trusted Root CA list
@@ -230,7 +230,7 @@ eap {
 		#  *one* CA certificate.
 		#
                #  This field may contain a PKCS #11 URI instead of a filename
-               #  if OpenSSL is using the libp11 "pkcs11" ENGINE plugin.
+               #  if OpenSSL is using a pkcs11 provider or the libp11 "pkcs11" ENGINE plugin.
                ca_file = ${cadir}/ca.pem
 
 		#
