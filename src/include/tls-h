@@ -344,6 +344,9 @@ fr_tls_status_t tls_application_data(tls_session_t *ssn, REQUEST *request);
 
 extern int fr_tls_ex_index_certs;
 extern int fr_tls_ex_index_vps;
+#ifdef HAVE_OPENSSL_ENGINE_H
+extern ENGINE *pkcs11_engine;
+#endif
 
 /* configured values goes right here */
 struct fr_tls_server_conf_t {
