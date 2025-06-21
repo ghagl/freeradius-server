@@ -60,12 +60,23 @@ USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
 #    include <openssl/evp.h>
 #  endif
 #  include <openssl/ssl.h>
+#  include <openssl/store.h>
+#  ifdef HAVE_OPENSSL_ENGINE_H
+#    define OPENSSL_SUPPRESS_DEPRECATED
+#    include <openssl/engine.h>
+#    undef OPENSSL_SUPPRESS_DEPRECATED
+#  endif
 
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 #  include <openssl/provider.h>
 
 static OSSL_PROVIDER *openssl_default_provider = NULL;
 static OSSL_PROVIDER *openssl_legacy_provider = NULL;
+OSSL_PROVIDER *pkcs11_provider = NULL;
+#endif
+
+#ifdef HAVE_OPENSSL_ENGINE_H
+ENGINE *pkcs11_engine = NULL;
 #endif
 
 #define LOG_PREFIX "tls"
@@ -3604,7 +3615,30 @@ int tls_global_init(TLS_UNUSED bool spawn_flag, TLS_UNUSED bool check)
 	SSL_load_error_strings();	/* readable error messages (examples show call before library_init) */
 	SSL_library_init();		/* initialize library */
 	OpenSSL_add_all_algorithms();	/* required for SHA2 in OpenSSL < 0.9.8o and 1.0.0.a */
-	CONF_modules_load_file(NULL, NULL, 0);
+       CONF_modules_load_file(NULL, NULL, 0);
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+       pkcs11_provider = OSSL_PROVIDER_load(NULL, "pkcs11");
+#endif
+
+#ifdef HAVE_OPENSSL_ENGINE_H
+       if (!pkcs11_provider) {
+               ENGINE_load_builtin_engines();
+               ENGINE_register_all_complete();
+
+               pkcs11_engine = ENGINE_by_id("pkcs11");
+               if (pkcs11_engine) {
+                       if (!ENGINE_init(pkcs11_engine)) {
+                               ERROR("(TLS) Failed to initialize PKCS#11 engine");
+                               ENGINE_free(pkcs11_engine);
+                               pkcs11_engine = NULL;
+                       } else {
+                               /* free structural reference */
+                               ENGINE_free(pkcs11_engine);
+                       }
+               }
+       }
+#endif
 
 	/*
 	 *	Initialize the index for the certificates.
@@ -3710,10 +3744,20 @@ void tls_global_cleanup(void)
 	ERR_remove_thread_state(NULL);
 #endif
 #ifndef OPENSSL_NO_ENGINE
-	ENGINE_cleanup();
+#ifdef HAVE_OPENSSL_ENGINE_H
+       if (pkcs11_engine) {
+               ENGINE_finish(pkcs11_engine);
+               pkcs11_engine = NULL;
+       }
+#endif
+       ENGINE_cleanup();
 #endif
 
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
+       if (pkcs11_provider && !OSSL_PROVIDER_unload(pkcs11_provider)) {
+               ERROR("Failed unloading pkcs11 provider");
+       }
+       pkcs11_provider = NULL;
 	if (openssl_default_provider && !OSSL_PROVIDER_unload(openssl_default_provider)) {
 		ERROR("Failed unloading default provider");
 	}
@@ -3746,8 +3790,64 @@ static const FR_NAME_NUMBER version2int[] = {
 #ifdef TLS1_3_VERSION
 	{ "1.3",    TLS1_3_VERSION },
 #endif
-	{ NULL, 0 }
+        { NULL, 0 }
 };
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+static X509 *load_cert_pkcs11_provider(const char *uri)
+{
+       OSSL_STORE_CTX   *store = NULL;
+       OSSL_STORE_INFO  *info = NULL;
+       X509             *cert = NULL;
+
+       store = OSSL_STORE_open(uri, NULL, NULL, NULL, NULL);
+       if (!store) return NULL;
+
+       while (!cert && !OSSL_STORE_eof(store)) {
+               info = OSSL_STORE_load(store);
+               if (!info) {
+                       if (OSSL_STORE_error(store)) goto end;
+                       continue;
+               }
+
+               if (OSSL_STORE_INFO_get_type(info) == OSSL_STORE_INFO_CERT)
+                       cert = OSSL_STORE_INFO_get1_CERT(info);
+
+               OSSL_STORE_INFO_free(info);
+       }
+
+end:
+       OSSL_STORE_close(store);
+       return cert;
+}
+
+static EVP_PKEY *load_key_pkcs11_provider(const char *uri)
+{
+       OSSL_STORE_CTX   *store = NULL;
+       OSSL_STORE_INFO  *info = NULL;
+       EVP_PKEY         *pkey = NULL;
+
+       store = OSSL_STORE_open(uri, NULL, NULL, NULL, NULL);
+       if (!store) return NULL;
+
+       while (!pkey && !OSSL_STORE_eof(store)) {
+               info = OSSL_STORE_load(store);
+               if (!info) {
+                       if (OSSL_STORE_error(store)) goto end;
+                       continue;
+               }
+
+               if (OSSL_STORE_INFO_get_type(info) == OSSL_STORE_INFO_PKEY)
+                       pkey = OSSL_STORE_INFO_get1_PKEY(info);
+
+               OSSL_STORE_INFO_free(info);
+       }
+
+end:
+       OSSL_STORE_close(store);
+       return pkey;
+}
+#endif
 
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L
 #ifdef TLS1_3_VERSION
@@ -3978,21 +4078,64 @@ SSL_CTX *tls_init_ctx(fr_tls_server_conf_t *conf, int client, char const *chain_
 	 *	the cert chain needs to be given in PEM from
 	 *	openSSL.org
 	 */
-	if (!chain_file) chain_file = conf->certificate_file;
-	if (!chain_file) goto load_ca;
+       if (!chain_file) chain_file = conf->certificate_file;
+       if (!chain_file) goto load_ca;
 
-	if (type == SSL_FILETYPE_PEM) {
-		if (!(SSL_CTX_use_certificate_chain_file(ctx, chain_file))) {
-			tls_error_log(NULL, "Failed reading certificate file \"%s\"",
-				      chain_file);
-			return NULL;
-		}
+       if (strncmp(chain_file, "pkcs11:", 7) == 0) {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+               if (pkcs11_provider) {
+                       X509 *cert = load_cert_pkcs11_provider(chain_file);
+                       if (!cert) {
+                               tls_error_log(NULL, "Failed to load certificate \"%s\"", chain_file);
+                               return NULL;
+                       }
+                       if (!SSL_CTX_use_certificate(ctx, cert)) {
+                               tls_error_log(NULL, "Failed adding PKCS#11 certificate");
+                               X509_free(cert);
+                               return NULL;
+                       }
+                       X509_free(cert);
+               } else
+#endif
+#ifdef HAVE_OPENSSL_ENGINE_H
+               if (pkcs11_engine) {
+                       struct {
+                               const char *cert_id;
+                               X509 *cert;
+                       } params;
+                       params.cert_id = chain_file;
+                       params.cert = NULL;
 
-	} else if (!(SSL_CTX_use_certificate_file(ctx, chain_file, type))) {
-		tls_error_log(NULL, "Failed reading certificate file \"%s\"",
-			      chain_file);
-		return NULL;
-	}
+                       if (!ENGINE_ctrl_cmd(pkcs11_engine, "LOAD_CERT_CTRL", 0, &params, NULL, 1)) {
+                               tls_error_log(NULL, "Failed to load certificate \"%s\"", chain_file);
+                               return NULL;
+                       }
+                       if (!SSL_CTX_use_certificate(ctx, params.cert)) {
+                               tls_error_log(NULL, "Failed adding PKCS#11 certificate");
+                               X509_free(params.cert);
+                               return NULL;
+                       }
+                       X509_free(params.cert);
+               } else
+#endif
+               {
+                       tls_error_log(NULL, "PKCS#11 support not available");
+                       return NULL;
+               }
+       } else {
+               if (type == SSL_FILETYPE_PEM) {
+                       if (!(SSL_CTX_use_certificate_chain_file(ctx, chain_file))) {
+                               tls_error_log(NULL, "Failed reading certificate file \"%s\"",
+                                             chain_file);
+                               return NULL;
+                       }
+
+               } else if (!(SSL_CTX_use_certificate_file(ctx, chain_file, type))) {
+                       tls_error_log(NULL, "Failed reading certificate file \"%s\"",
+                                     chain_file);
+                       return NULL;
+               }
+       }
 
 load_ca:
 	/*
@@ -4023,22 +4166,59 @@ load_ca:
 	}
 
 	/* Load private key */
-	if (!private_key_file) private_key_file = conf->private_key_file;
-	if (private_key_file) {
-		if (!(SSL_CTX_use_PrivateKey_file(ctx, private_key_file, type))) {
-			tls_error_log(NULL, "Failed reading private key file \"%s\"",
-				      private_key_file);
-			return NULL;
-		}
+       if (!private_key_file) private_key_file = conf->private_key_file;
+       if (private_key_file) {
+               if (strncmp(private_key_file, "pkcs11:", 7) == 0) {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+                       if (pkcs11_provider) {
+                               EVP_PKEY *pkey = load_key_pkcs11_provider(private_key_file);
+                               if (!pkey) {
+                                       tls_error_log(NULL, "Failed to load private key \"%s\"", private_key_file);
+                                       return NULL;
+                               }
+                               if (!SSL_CTX_use_PrivateKey(ctx, pkey)) {
+                                       tls_error_log(NULL, "Failed adding PKCS#11 private key");
+                                       EVP_PKEY_free(pkey);
+                                       return NULL;
+                               }
+                               EVP_PKEY_free(pkey);
+                       } else
+#endif
+#ifdef HAVE_OPENSSL_ENGINE_H
+                       if (pkcs11_engine) {
+                               EVP_PKEY *pkey = ENGINE_load_private_key(pkcs11_engine, private_key_file, NULL, NULL);
+                               if (!pkey) {
+                                       tls_error_log(NULL, "Failed to load private key \"%s\"", private_key_file);
+                                       return NULL;
+                               }
+                               if (!SSL_CTX_use_PrivateKey(ctx, pkey)) {
+                                       tls_error_log(NULL, "Failed adding PKCS#11 private key");
+                                       EVP_PKEY_free(pkey);
+                                       return NULL;
+                               }
+                               EVP_PKEY_free(pkey);
+                       } else
+#endif
+                       {
+                               tls_error_log(NULL, "PKCS#11 support not available");
+                               return NULL;
+                       }
+               } else {
+                       if (!(SSL_CTX_use_PrivateKey_file(ctx, private_key_file, type))) {
+                               tls_error_log(NULL, "Failed reading private key file \"%s\"",
+                                             private_key_file);
+                               return NULL;
+                       }
+               }
 
-		/*
-		 * Check if the loaded private key is the right one
-		 */
-		if (!SSL_CTX_check_private_key(ctx)) {
-			ERROR(LOG_PREFIX ": Private key does not match the certificate public key");
-			return NULL;
-		}
-	}
+               /*
+                * Check if the loaded private key is the right one
+                */
+               if (!SSL_CTX_check_private_key(ctx)) {
+                       ERROR(LOG_PREFIX ": Private key does not match the certificate public key");
+                       return NULL;
+               }
+       }
 
 #ifdef PSK_MAX_IDENTITY_LEN
 post_ca:

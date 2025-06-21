@@ -1694,15 +1694,17 @@ int cf_item_parse(CONF_SECTION *cs, char const *name, unsigned int type, void *d
 		 *	to be caught as early as possible, during
 		 *	server startup.
 		 */
-		if (*q && file_input && !cf_file_check(cs, *q, true)) {
-			cf_log_err(&(cs->item), "Failed parsing configuration item \"%s\"", name);
-			return -1;
-		}
+               if (*q && file_input && strncmp(*q, "pkcs11:", 7) != 0 &&
+                   !cf_file_check(cs, *q, true)) {
+                       cf_log_err(&(cs->item), "Failed parsing configuration item \"%s\"", name);
+                       return -1;
+               }
 
-		if (*q && file_exists && !cf_file_check(cs, *q, false)) {
-			cf_log_err(&(cs->item), "Failed parsing configuration item \"%s\"", name);
-			return -1;
-		}
+               if (*q && file_exists && strncmp(*q, "pkcs11:", 7) != 0 &&
+                   !cf_file_check(cs, *q, false)) {
+                       cf_log_err(&(cs->item), "Failed parsing configuration item \"%s\"", name);
+                       return -1;
+               }
 		break;
 
 	case PW_TYPE_IPV4_ADDR:
