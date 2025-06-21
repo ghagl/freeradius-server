@@ -61,6 +61,7 @@ USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
 #  endif
 #  include <openssl/ssl.h>
 #  include <openssl/store.h>
+
 #  ifdef HAVE_OPENSSL_ENGINE_H
 #    include <openssl/engine.h>
 #  endif
@@ -71,6 +72,10 @@ USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
 static OSSL_PROVIDER *openssl_default_provider = NULL;
 static OSSL_PROVIDER *openssl_legacy_provider = NULL;
 OSSL_PROVIDER *pkcs11_provider = NULL;
+#endif
+
+#ifdef HAVE_OPENSSL_ENGINE_H
+ENGINE *pkcs11_engine = NULL;
 #endif
 
 #ifdef HAVE_OPENSSL_ENGINE_H
