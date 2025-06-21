@@ -66,6 +66,9 @@ static size_t			openssl_page_size;
  */
 _Thread_local TALLOC_CTX 	*ssl_talloc_ctx;
 
+#ifdef HAVE_OPENSSL_ENGINE_H
+ENGINE *pkcs11_engine;
+#endif
 /** Used to control freeing of thread local OpenSSL resources
  *
  */
@@ -521,6 +524,19 @@ int fr_openssl_init(void)
 	fr_tls_log_init();
 
 	fr_tls_bio_init();
+#ifdef HAVE_OPENSSL_ENGINE_H
+       pkcs11_engine = ENGINE_by_id("pkcs11");
+       if (pkcs11_engine) {
+               if (!ENGINE_init(pkcs11_engine)) {
+                       fr_tls_log(NULL, "Failed to initialize PKCS#11 engine");
+                       ENGINE_free(pkcs11_engine);
+                       pkcs11_engine = NULL;
+               } else {
+                       ENGINE_free(pkcs11_engine);
+               }
+       }
+#endif
+
 
 	/*
 	 *	Use an atexit handler to try and ensure

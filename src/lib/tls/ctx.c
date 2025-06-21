@@ -45,6 +45,9 @@ USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
 
 #include <openssl/rand.h>
 #include <openssl/dh.h>
+#ifdef HAVE_OPENSSL_ENGINE_H
+#include <openssl/engine.h>
+#endif
 #include <openssl/x509v3.h>
 #include <openssl/provider.h>
 
@@ -255,33 +258,73 @@ static int tls_ctx_load_cert_chain(SSL_CTX *ctx, fr_tls_chain_conf_t *chain, boo
 	 */
 	SSL_CTX_set_default_passwd_cb(ctx, fr_tls_session_password_cb);
 
-	switch (chain->file_format) {
-	case SSL_FILETYPE_PEM:
-		if (!(SSL_CTX_use_certificate_chain_file(ctx, chain->certificate_file))) {
-			fr_tls_log(NULL, "Failed reading certificate file \"%s\"",
-				      chain->certificate_file);
-			return -1;
-		}
-		break;
+#ifdef HAVE_OPENSSL_ENGINE_H
+       if (!strncmp("pkcs11:", chain->certificate_file, 7)) {
+               struct {
+                       const char *cert_id;
+                       X509 *cert;
+               } params;
+               params.cert_id = chain->certificate_file;
+               params.cert = NULL;
 
-	case SSL_FILETYPE_ASN1:
-		if (!(SSL_CTX_use_certificate_file(ctx, chain->certificate_file, chain->file_format))) {
-			fr_tls_log(NULL, "Failed reading certificate file \"%s\"",
-				      chain->certificate_file);
-			return -1;
-		}
-		break;
+               if (!ENGINE_ctrl_cmd(pkcs11_engine, "LOAD_CERT_CTRL", 0, &params, NULL, 1)) {
+                       fr_tls_log(NULL, "Failed to load certificate \"%s\"", chain->certificate_file);
+                       return -1;
+               }
+               if (!SSL_CTX_use_certificate(ctx, params.cert)) {
+                       fr_tls_log(NULL, "Failed adding PKCS#11 certificate");
+                       X509_free(params.cert);
+                       return -1;
+               }
+               X509_free(params.cert);
+       } else
+#endif
+       {
+               switch (chain->file_format) {
+               case SSL_FILETYPE_PEM:
+                       if (!(SSL_CTX_use_certificate_chain_file(ctx, chain->certificate_file))) {
+                               fr_tls_log(NULL, "Failed reading certificate file \"%s\"",
+                                              chain->certificate_file);
+                               return -1;
+                       }
+                       break;
 
-	default:
-		fr_assert(0);
-		break;
-	}
+               case SSL_FILETYPE_ASN1:
+                       if (!(SSL_CTX_use_certificate_file(ctx, chain->certificate_file, chain->file_format))) {
+                               fr_tls_log(NULL, "Failed reading certificate file \"%s\"",
+                                              chain->certificate_file);
+                               return -1;
+                       }
+                       break;
 
-	if (!(SSL_CTX_use_PrivateKey_file(ctx, chain->private_key_file, chain->file_format))) {
-		fr_tls_log(NULL, "Failed reading private key file \"%s\"",
-			      chain->private_key_file);
-		return -1;
-	}
+               default:
+                       fr_assert(0);
+                       break;
+               }
+       }
+
+#ifdef HAVE_OPENSSL_ENGINE_H
+       if (!strncmp("pkcs11:", chain->private_key_file, 7)) {
+               EVP_PKEY *pkey = ENGINE_load_private_key(pkcs11_engine, chain->private_key_file, NULL, NULL);
+               if (!pkey) {
+                       fr_tls_log(NULL, "Failed to load private key \"%s\"", chain->private_key_file);
+                       return -1;
+               }
+               if (!SSL_CTX_use_PrivateKey(ctx, pkey)) {
+                       fr_tls_log(NULL, "Failed adding PKCS#11 private key");
+                       EVP_PKEY_free(pkey);
+                       return -1;
+               }
+               EVP_PKEY_free(pkey);
+       } else
+#endif
+       {
+               if (!(SSL_CTX_use_PrivateKey_file(ctx, chain->private_key_file, chain->file_format))) {
+                       fr_tls_log(NULL, "Failed reading private key file \"%s\"",
+                                     chain->private_key_file);
+                       return -1;
+               }
+       }
 
 	{
 		size_t		extra_cnt, i;
