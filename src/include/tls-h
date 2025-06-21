@@ -347,6 +347,9 @@ extern int fr_tls_ex_index_vps;
 #ifdef HAVE_OPENSSL_ENGINE_H
 extern ENGINE *pkcs11_engine;
 #endif
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+extern OSSL_PROVIDER *pkcs11_provider;
+#endif
 
 /* configured values goes right here */
 struct fr_tls_server_conf_t {
